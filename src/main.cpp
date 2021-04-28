@@ -2,18 +2,10 @@
 
 uint32_t seed;
 
-uint8_t matrix[8] = {
-    0b00000000,
-    0b00001000,
-    0b00000100,
-    0b00011100,
-    0b00000000,
-    0b00000000,
-    0b00000000,
-    0b00000000
-};
+uint8_t matrix[8];
 uint8_t diff[8];
 
+#define CACHE_SIZE 500
 uint16_t cache[500];
 uint8_t index = 0;
 
@@ -26,15 +18,17 @@ uint8_t bitcount(uint8_t n) {
    return count;
 }
 
-uint16_t hash() {
-    uint16_t h = 0;
+uint16_t crc16(uint8_t* data_p, uint8_t length){
+    uint8_t x;
+    uint16_t crc = 0xFFFF;
 
-    for( uint8_t i = 0; i < 8; i++ ) {
-        if( i % 2 == 0 ) h ^= matrix[i] << 8;
-        else h ^= matrix[i];
+    while (length--){
+        x = crc >> 8 ^ *data_p++;
+        x ^= x>>4;
+        crc = (crc << 8) ^ ((uint16_t)(x << 12)) ^ ((uint16_t)(x <<5)) ^ ((uint16_t)x);
     }
 
-    return h;
+    return crc;
 }
 
 uint8_t wrap(int8_t i, uint8_t limit) {
@@ -45,32 +39,29 @@ uint32_t generateSeed() {
     return analogRead(A0) * analogRead(A1);
 }
 
-void setup() {
-    Serial.begin(115200);
-    while( !Serial );
+void start() {
+    // reset index
+    index = 0;
 
+    // generate & save seed
     seed = generateSeed();
     randomSeed(seed);
 
+    // fill the matrix with random values
     for( int8_t r = 0; r < 8; r++ ) {
         matrix[r] = random(0xFF);
     }
 
-    cache[index] = hash();
+    // save the initial hash
+    cache[0] = crc16(matrix, 8);
+
+    Serial.println(cache[0]);
 }
 
-void loop() {
-    Serial.println();
-    Serial.println(cache[index]);
-    Serial.println("------------------");
-    
+void iterate() {
     for( int8_t r = 0; r < 8; r++ ) {
-        Serial.print("|");
         for( int8_t c = 0; c < 8; c++ ) {
             bool state = (matrix[r] >> (7 - c)) & 0x01;
-
-            Serial.print(state ? "▇▇" : "  ");
-
             uint8_t n = 0;
 
             // count neighboring living cells
@@ -87,48 +78,97 @@ void loop() {
                 diff[r] |= (1 << (7 - c));
             }
         }
+    }
+
+    // apply and clear diff
+    for( uint8_t i = 0; i < 8; i++ ) {
+        matrix[i] ^= diff[i];
+        diff[i] = 0;
+    }
+}
+
+void print() {
+    Serial.println("------------------");
+
+    for( int8_t r = 0; r < 8; r++ ) {
+        Serial.print("|");
+        for( int8_t c = 0; c < 8; c++ ) {
+            bool state = (matrix[r] >> (7 - c)) & 0x01;
+
+            Serial.print(state ? "▇▇" : "  ");
+        }
         Serial.print("|");
         Serial.println();
     }
 
     Serial.println("------------------");
+    Serial.println();
+}
 
-    // apply diff
-    for( uint8_t i = 0; i < 8; i++ ) {
-        matrix[i] ^= diff[i];
-        diff[i] = 0;
-    }
+void setup() {
+    Serial.begin(115200);
+    while( !Serial );
 
-    if( index >= 499 ){
+    start();
+    print();
+}
+
+void loop() {
+    iterate();
+    print();
+
+    if( index >= (CACHE_SIZE - 1) ){
         // no more memory available
-        Serial.println("Out of memory");
-        while(1);
-    }
-    index++;
-    uint16_t chash = hash();
-    cache[index] = chash;
+        Serial.println("Out of memory. Restarting...");
+        Serial.println();
 
-    if( cache[index] == 0 ){
-        Serial.println("You died.");
-        while(1);
-    }
+        delay(2000);
+        start();
+        print();
+    }else{
+        index++;
+        uint16_t chash = crc16(matrix, 8);
+        cache[index] = chash;
 
-    uint16_t r = 0;
-    for( int16_t i = (index - 1); i >= 0; i-- ){
-        if( cache[i] == chash ){
-            if( r == 0 ){
-                Serial.print("Game is stuck.");
-            }else{
-                Serial.print("Recursion detected (");
-                Serial.print(chash);
-                Serial.print(") at ");
-                Serial.print(r);
-                Serial.println(" iterations");
+        Serial.println(chash);
+
+        if( chash == 0 ){
+            Serial.println("You died. Restarting...");
+            Serial.println();
+
+            delay(2000);
+            start();
+            print();
+        }else{
+            uint16_t r = 0;
+            for( int16_t i = (index - 1); i >= 0; i-- ){
+                if( cache[i] == chash ){
+                    if( r == 0 ){
+                        Serial.print("Game is stuck. Restarting...");
+                        Serial.println();
+
+                        delay(2000);
+                        start();
+                        print();
+                        break;
+                    }else{
+                        Serial.print("Recursion detected (");
+                        Serial.print(chash);
+                        Serial.print(") at ");
+                        Serial.print(r);
+                        Serial.println(" iterations. Restarting...");
+                        Serial.println();
+
+                        delay(2000);
+                        start();
+                        print();
+                        break;
+                    }
+                }
+                r++;
             }
-            while(1);
         }
-        r++;
     }
 
-    delay(500);
+    delay(250);
 }
